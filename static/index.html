@@ -115,7 +115,7 @@
     "######.##### ## #####.######",
     "######.##### ## #####.######",
     "######.##          ##.######",
-    "######.## ######## ##.######",
+    "######.## ###  ### ##.######",
     "######.## #      # ##.######",
     "      .   #      #   .      ",
     "######.## #      # ##.######",
@@ -177,6 +177,31 @@
   const GAME_SECONDS = 60;
   const PAC_COUNT = 5;
 
+  const GHOST_START = { c: 14, r: 14 };
+
+  // Cells reachable from the ghost's start — Pac-Men only spawn here, so nothing
+  // ever appears in a walled-off pocket the ghost can't get to.
+  const cellKey = (c, r) => r * COLS + c;
+  function reachableFrom(sc, sr) {
+    const seen = new Set([cellKey(sc, sr)]);
+    const stack = [[sc, sr]];
+    while (stack.length) {
+      const [c, r] = stack.pop();
+      for (const d of DIRS) {
+        const nc = wrapC(c + d.c);
+        const nr = r + d.r;
+        if (nr < 0 || nr >= ROWS || isWall(nc, nr)) continue;
+        const k = cellKey(nc, nr);
+        if (!seen.has(k)) { seen.add(k); stack.push([nc, nr]); }
+      }
+    }
+    return seen;
+  }
+  const reachable = reachableFrom(GHOST_START.c, GHOST_START.r);
+  const spawnCells = openCells.filter((cell) =>
+    reachable.has(cellKey(cell.c, cell.r))
+  );
+
   let ghost, pacs, score, eaten, timeLeft, running, lastTs, wobble;
 
   function makeGhost() {
@@ -193,7 +218,7 @@
     let cell;
     let tries = 0;
     do {
-      cell = openCells[(Math.random() * openCells.length) | 0];
+      cell = spawnCells[(Math.random() * spawnCells.length) | 0];
       tries++;
     } while (
       tries < 40 &&
