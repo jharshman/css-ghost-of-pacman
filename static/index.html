@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ghost of Pac-Man</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    color: #ffcc00;
+    font-family: "Courier New", monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  h1 {
+    margin: 0;
+    font-size: 22px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #ff6ac1;
+    text-shadow: 0 0 8px rgba(255, 106, 193, 0.6);
+  }
+  #hud {
+    display: flex;
+    gap: 28px;
+    font-size: 16px;
+    letter-spacing: 1px;
+  }
+  #hud b { color: #fff; }
+  canvas {
+    background: #000;
+    border: 2px solid #1d1f8a;
+    border-radius: 6px;
+    box-shadow: 0 0 24px rgba(29, 31, 138, 0.5);
+    touch-action: none;
+  }
+  #hint {
+    font-size: 12px;
+    color: #7a7a9a;
+    letter-spacing: 1px;
+  }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgba(0, 0, 0, 0.82);
+    text-align: center;
+    padding: 20px;
+  }
+  #overlay.hidden { display: none; }
+  #overlay p { margin: 0; font-size: 15px; color: #ffcc00; max-width: 340px; line-height: 1.5; }
+  #overlay .big { font-size: 30px; color: #ff6ac1; letter-spacing: 2px; }
+  button {
+    font-family: inherit;
+    font-size: 16px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #000;
+    background: #ffcc00;
+    border: none;
+    border-radius: 6px;
+    padding: 12px 26px;
+    cursor: pointer;
+    transition: transform 0.08s ease, background 0.15s ease;
+  }
+  button:hover { background: #fff; transform: translateY(-1px); }
+</style>
+</head>
+<body>
+  <h1>Ghost of Pac-Man</h1>
+  <div id="hud">
+    <div>SCORE <b id="score">0</b></div>
+    <div>EATEN <b id="eaten">0</b></div>
+    <div>TIME <b id="time">60</b></div>
+  </div>
+  <canvas id="game"></canvas>
+  <div id="hint">Arrow keys to move — hunt the Pac-Men</div>
+
+  <div id="overlay">
+    <div class="big" id="ov-title">Ghost of Pac-Man</div>
+    <p id="ov-text">You are the ghost. Chase down the wandering Pac-Men and eat them
+      before time runs out. Move with the <b>arrow keys</b>.</p>
+    <button id="ov-btn">Start</button>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---- Maze layout ----------------------------------------------------------
+  // # = wall, space = path. Pac-Men and the ghost travel the open cells.
+  const MAP = [
+    "############################",
+    "#............##............#",
+    "#.####.#####.##.#####.####.#",
+    "#.####.#####.##.#####.####.#",
+    "#.####.#####.##.#####.####.#",
+    "#..........................#",
+    "#.####.##.########.##.####.#",
+    "#.####.##.########.##.####.#",
+    "#......##....##....##......#",
+    "######.##### ## #####.######",
+    "######.##### ## #####.######",
+    "######.##          ##.######",
+    "######.## ######## ##.######",
+    "######.## #      # ##.######",
+    "      .   #      #   .      ",
+    "######.## #      # ##.######",
+    "######.## ######## ##.######",
+    "######.##          ##.######",
+    "######.## ######## ##.######",
+    "######.## ######## ##.######",
+    "#............##............#",
+    "#.####.#####.##.#####.####.#",
+    "#.####.#####.##.#####.####.#",
+    "#...##................##...#",
+    "###.##.##.########.##.##.###",
+    "###.##.##.########.##.##.###",
+    "#......##....##....##......#",
+    "#.##########.##.##########.#",
+    "#.##########.##.##########.#",
+    "#..........................#",
+    "############################",
+  ];
+
+  const ROWS = MAP.length;
+  const COLS = MAP[0].length;
+  const TILE = 20;
+
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  canvas.width = COLS * TILE;
+  canvas.height = ROWS * TILE;
+
+  const scoreEl = document.getElementById("score");
+  const eatenEl = document.getElementById("eaten");
+  const timeEl = document.getElementById("time");
+  const overlay = document.getElementById("overlay");
+  const ovTitle = document.getElementById("ov-title");
+  const ovText = document.getElementById("ov-text");
+  const ovBtn = document.getElementById("ov-btn");
+
+  const isWall = (c, r) =>
+    r < 0 || r >= ROWS || c < 0 || c >= COLS || MAP[r][c] === "#";
+
+  const openCells = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (!isWall(c, r)) openCells.push({ c, r });
+
+  // ---- Entities --------------------------------------------------------------
+  const DIRS = [
+    { c: 1, r: 0 },
+    { c: -1, r: 0 },
+    { c: 0, r: 1 },
+    { c: 0, r: -1 },
+  ];
+
+  const SPEED = 5.5;       // ghost tiles/sec
+  const PAC_SPEED = 3.6;   // pac-man tiles/sec
+  const GAME_SECONDS = 60;
+  const PAC_COUNT = 5;
+
+  let ghost, pacs, score, eaten, timeLeft, running, lastTs, wobble;
+
+  function makeGhost() {
+    return {
+      c: 14, r: 14,           // start on the central corridor
+      x: 14, y: 14,
+      dir: { c: 0, r: 0 },
+      want: { c: 0, r: 0 },
+    };
+  }
+
+  function spawnPac(avoid) {
+    let cell;
+    let tries = 0;
+    do {
+      cell = openCells[(Math.random() * openCells.length) | 0];
+      tries++;
+    } while (
+      tries < 40 &&
+      Math.abs(cell.c - avoid.c) + Math.abs(cell.r - avoid.r) < 8
+    );
+    const d = DIRS[(Math.random() * DIRS.length) | 0];
+    return { c: cell.c, r: cell.r, x: cell.c, y: cell.r, dir: { ...d } };
+  }
+
+  function reset() {
+    ghost = makeGhost();
+    pacs = [];
+    for (let i = 0; i < PAC_COUNT; i++) pacs.push(spawnPac(ghost));
+    score = 0;
+    eaten = 0;
+    timeLeft = GAME_SECONDS;
+    wobble = 0;
+    running = true;
+    lastTs = 0;
+    updateHud();
+  }
+
+  function updateHud() {
+    scoreEl.textContent = score;
+    eatenEl.textContent = eaten;
+    timeEl.textContent = Math.ceil(timeLeft);
+  }
+
+  // ---- Movement: grid-aligned, turn only when centered on a tile ------------
+  const EPS = 0.08;
+  const atCenter = (e) => Math.abs(e.x - e.c) < EPS && Math.abs(e.y - e.r) < EPS;
+
+  function canGo(c, r, dir) {
+    return !isWall(c + dir.c, r + dir.r);
+  }
+
+  function stepEntity(e, dt, speed, chooseDir) {
+    if (atCenter(e)) {
+      e.x = e.c;
+      e.y = e.r;
+      chooseDir(e);
+      if (!canGo(e.c, e.r, e.dir)) {
+        e.dir = { c: 0, r: 0 };
+      }
+    }
+    const move = speed * dt;
+    e.x += e.dir.c * move;
+    e.y += e.dir.r * move;
+
+    // horizontal wrap-around through the side tunnels
+    if (e.x < -0.5) e.x = COLS - 0.5;
+    if (e.x > COLS - 0.5) e.x = -0.5;
+
+    // snap grid coords once we cross a tile boundary
+    e.c = Math.round(e.x);
+    e.r = Math.round(e.y);
+    if (e.c < 0) e.c = COLS - 1;
+    if (e.c >= COLS) e.c = 0;
+  }
+
+  function chooseGhostDir(e) {
+    // honor a queued turn the moment it becomes legal
+    if ((e.want.c || e.want.r) && canGo(e.c, e.r, e.want)) {
+      e.dir = { ...e.want };
+    }
+  }
+
+  function choosePacDir(e) {
+    // Pac-Men flee: prefer the legal direction that increases distance to ghost,
+    // with a dash of randomness so they don't move perfectly.
+    const options = DIRS.filter((d) => canGo(e.c, e.r, d));
+    if (options.length === 0) {
+      e.dir = { c: 0, r: 0 };
+      return;
+    }
+    // avoid immediate reversal unless it's the only option (keeps them lively)
+    const forward = options.filter(
+      (d) => !(d.c === -e.dir.c && d.r === -e.dir.r)
+    );
+    const pool = forward.length ? forward : options;
+
+    if (Math.random() < 0.25) {
+      e.dir = { ...pool[(Math.random() * pool.length) | 0] };
+      return;
+    }
+    let best = pool[0];
+    let bestDist = -Infinity;
+    for (const d of pool) {
+      const nc = e.c + d.c;
+      const nr = e.r + d.r;
+      const dist = Math.abs(nc - ghost.c) + Math.abs(nr - ghost.r);
+      if (dist > bestDist) {
+        bestDist = dist;
+        best = d;
+      }
+    }
+    e.dir = { ...best };
+  }
+
+  function tiles(a, b) {
+    // toroidal-ish distance accounting for the side tunnels
+    let dc = Math.abs(a.x - b.x);
+    dc = Math.min(dc, COLS - dc);
+    const dr = Math.abs(a.y - b.y);
+    return Math.hypot(dc, dr);
+  }
+
+  // ---- Rendering -------------------------------------------------------------
+  function drawMaze() {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (MAP[r][c] === "#") {
+          ctx.fillStyle = "#1414d6";
+          ctx.fillRect(c * TILE + 2, r * TILE + 2, TILE - 4, TILE - 4);
+        }
+      }
+    }
+  }
+
+  function drawPac(p) {
+    const cx = (p.x + 0.5) * TILE;
+    const cy = (p.y + 0.5) * TILE;
+    const rad = TILE * 0.44;
+    // mouth points toward travel direction; animate open/close
+    let angle = 0;
+    if (p.dir.c === -1) angle = Math.PI;
+    else if (p.dir.r === -1) angle = -Math.PI / 2;
+    else if (p.dir.r === 1) angle = Math.PI / 2;
+    const mouth = (Math.sin(wobble * 8) * 0.5 + 0.5) * 0.32 + 0.04;
+    ctx.fillStyle = "#ffe100";
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, rad, angle + mouth, angle - mouth + Math.PI * 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawGhost(g) {
+    const cx = (g.x + 0.5) * TILE;
+    const cy = (g.y + 0.5) * TILE;
+    const rad = TILE * 0.46;
+    const wob = Math.sin(wobble * 10) * 1.5;
+
+    ctx.fillStyle = "#ff4dd2";
+    ctx.beginPath();
+    ctx.arc(cx, cy - 1, rad, Math.PI, 0);
+    // wavy skirt
+    const feet = 4;
+    const left = cx - rad;
+    const bottom = cy + rad;
+    ctx.lineTo(cx + rad, bottom);
+    for (let i = feet; i >= 0; i--) {
+      const fx = left + (rad * 2 * i) / feet;
+      const fy = bottom - (i % 2 === 0 ? 0 : 4) - wob * (i % 2 ? 1 : 0);
+      ctx.lineTo(fx, fy);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // eyes look toward movement
+    const look = g.dir;
+    const ex = look.c * 2;
+    const ey = look.r * 2;
+    for (const s of [-1, 1]) {
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(cx + s * 5, cy - 3, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#0a1e8f";
+      ctx.beginPath();
+      ctx.arc(cx + s * 5 + ex, cy - 3 + ey, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function draw() {
+    drawMaze();
+    for (const p of pacs) drawPac(p);
+    drawGhost(ghost);
+  }
+
+  // ---- Main loop -------------------------------------------------------------
+  function frame(ts) {
+    if (!running) return;
+    if (!lastTs) lastTs = ts;
+    let dt = (ts - lastTs) / 1000;
+    lastTs = ts;
+    if (dt > 0.05) dt = 0.05; // clamp after tab switches
+
+    wobble += dt;
+    timeLeft -= dt;
+    if (timeLeft <= 0) {
+      timeLeft = 0;
+      return endGame();
+    }
+
+    stepEntity(ghost, dt, SPEED, chooseGhostDir);
+    for (const p of pacs) stepEntity(p, dt, PAC_SPEED, choosePacDir);
+
+    // eat any pac-man the ghost overlaps
+    for (const p of pacs) {
+      if (tiles(ghost, p) < 0.7) {
+        eaten++;
+        score += 100 + Math.ceil(timeLeft); // reward speed
+        Object.assign(p, spawnPac(ghost));  // respawn a fresh pac-man
+      }
+    }
+
+    updateHud();
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  function endGame() {
+    running = false;
+    draw();
+    ovTitle.textContent = "Time!";
+    ovText.innerHTML =
+      "You devoured <b>" + eaten + "</b> Pac-Men for <b>" + score +
+      "</b> points.";
+    ovBtn.textContent = "Play again";
+    overlay.classList.remove("hidden");
+  }
+
+  function start() {
+    overlay.classList.add("hidden");
+    reset();
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // ---- Input -----------------------------------------------------------------
+  const KEYS = {
+    ArrowRight: { c: 1, r: 0 },
+    ArrowLeft: { c: -1, r: 0 },
+    ArrowDown: { c: 0, r: 1 },
+    ArrowUp: { c: 0, r: -1 },
+  };
+  window.addEventListener("keydown", (e) => {
+    const d = KEYS[e.key];
+    if (!d) return;
+    e.preventDefault();
+    if (running) ghost.want = { ...d };
+  });
+
+  ovBtn.addEventListener("click", start);
+
+  // initial paint behind the overlay
+  reset();
+  running = false;
+  draw();
+})();
+</script>
+</body>
+</html>
