@@ -153,8 +153,11 @@
   const ovText = document.getElementById("ov-text");
   const ovBtn = document.getElementById("ov-btn");
 
-  const isWall = (c, r) =>
-    r < 0 || r >= ROWS || c < 0 || c >= COLS || MAP[r][c] === "#";
+  const wrapC = (c) => (c < 0 ? c + COLS : c >= COLS ? c - COLS : c);
+  const isWall = (c, r) => {
+    if (r < 0 || r >= ROWS) return true;
+    return MAP[r][wrapC(c)] === "#";
+  };
 
   const openCells = [];
   for (let r = 0; r < ROWS; r++)
@@ -180,6 +183,7 @@
     return {
       c: 14, r: 14,           // start on the central corridor
       x: 14, y: 14,
+      tx: 14, ty: 14,         // tile center currently steering toward
       dir: { c: 0, r: 0 },
       want: { c: 0, r: 0 },
     };
@@ -196,7 +200,12 @@
       Math.abs(cell.c - avoid.c) + Math.abs(cell.r - avoid.r) < 8
     );
     const d = DIRS[(Math.random() * DIRS.length) | 0];
-    return { c: cell.c, r: cell.r, x: cell.c, y: cell.r, dir: { ...d } };
+    return {
+      c: cell.c, r: cell.r,
+      x: cell.c, y: cell.r,
+      tx: cell.c, ty: cell.r,
+      dir: { ...d },
+    };
   }
 
   function reset() {
@@ -218,36 +227,52 @@
     timeEl.textContent = Math.ceil(timeLeft);
   }
 
-  // ---- Movement: grid-aligned, turn only when centered on a tile ------------
-  const EPS = 0.08;
-  const atCenter = (e) => Math.abs(e.x - e.c) < EPS && Math.abs(e.y - e.r) < EPS;
-
+  // ---- Movement: continuous glide toward the next tile center ---------------
+  // Frame-rate independent: an entity always travels toward (tx,ty); the moment
+  // it lands there it snaps exactly to that cell, picks a new direction, and
+  // aims at the adjacent center. Turns happen only at centers (classic grid
+  // movement) but progress between them is never discarded.
   function canGo(c, r, dir) {
     return !isWall(c + dir.c, r + dir.r);
   }
 
   function stepEntity(e, dt, speed, chooseDir) {
-    if (atCenter(e)) {
-      e.x = e.c;
-      e.y = e.r;
-      chooseDir(e);
-      if (!canGo(e.c, e.r, e.dir)) {
-        e.dir = { c: 0, r: 0 };
+    let dist = speed * dt;
+    let guard = 0;
+    while (dist > 0 && guard++ < 8) {
+      const dx = e.tx - e.x;
+      const dy = e.ty - e.y;
+      const toTarget = Math.abs(dx) + Math.abs(dy); // axis-aligned: one is 0
+
+      if (toTarget > dist) {
+        // still short of the center — glide the rest of this frame's budget
+        if (dx !== 0) e.x += Math.sign(dx) * dist;
+        if (dy !== 0) e.y += Math.sign(dy) * dist;
+        break;
       }
+
+      // reached the target center: snap to it exactly
+      e.x = e.tx;
+      e.y = e.ty;
+      e.c = e.tx;
+      e.r = e.ty;
+      dist -= toTarget;
+
+      // decide the next direction from this cell
+      chooseDir(e);
+      if (!(e.dir.c || e.dir.r) || !canGo(e.c, e.r, e.dir)) {
+        e.dir = { c: 0, r: 0 }; // parked: no input, or facing a wall
+        break;
+      }
+
+      let nc = e.c + e.dir.c;
+      const nr = e.r + e.dir.r;
+      // teleport across the side tunnels so the glide stays continuous
+      if (nc < 0) { e.x = COLS; e.c = COLS; nc = COLS - 1; }
+      else if (nc >= COLS) { e.x = -1; e.c = -1; nc = 0; }
+      e.tx = nc;
+      e.ty = nr;
     }
-    const move = speed * dt;
-    e.x += e.dir.c * move;
-    e.y += e.dir.r * move;
-
-    // horizontal wrap-around through the side tunnels
-    if (e.x < -0.5) e.x = COLS - 0.5;
-    if (e.x > COLS - 0.5) e.x = -0.5;
-
-    // snap grid coords once we cross a tile boundary
-    e.c = Math.round(e.x);
-    e.r = Math.round(e.y);
-    if (e.c < 0) e.c = COLS - 1;
-    if (e.c >= COLS) e.c = 0;
   }
 
   function chooseGhostDir(e) {
